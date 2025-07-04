@@ -9,6 +9,7 @@ CLIENT_LOGIN_DIR="${INSTALL_DIR}/data"
 CLIENT_LOGIN_FILE="${CLIENT_LOGIN_DIR}/client_login"
 # 日志文件路径
 SERVICE_LOG_FILE="${INSTALL_DIR}/output.log"
+LOCAL_VERSION_FILE="${INSTALL_DIR}/.hath_version" # 存储本地版本号的文件
 
 # 常见的JVM优化选项：
 # -Xms512m -Xmx1G: 设置初始堆内存为512MB，最大堆内存为1GB。请根据您的服务器内存大小调整。
@@ -21,6 +22,8 @@ JAVA_PACKAGE=""
 INIT_SYSTEM=""
 SERVICE_FILE_PATH=""
 HATH_STATUS="未安装" # 初始状态
+LOCAL_VERSION="未安装" # 本地安装的Hath版本
+REMOTE_VERSION="未知" # 远程可用的Hath最新版本
 
 # --- 辅助函数 ---
 
@@ -158,11 +161,10 @@ check_and_install_dependencies() {
 
 # 获取最新版本号
 get_latest_version() {
-    echo "--- 正在获取最新版本号 ---" >&2
     local content
     content=$(curl -s "$VERSION_URL")
     if [ $? -ne 0 ]; then
-        echo "错误：无法获取网页内容。请检查网络连接或 $VERSION_URL 是否可访问。" >&2
+        REMOTE_VERSION = "错误：无法获取网页内容。请检查网络连接。" >&2
         return 1
     fi
 
@@ -170,14 +172,21 @@ get_latest_version() {
     version=$(echo "$content" | grep -A 20 "postname.*Tenboro" | grep -oP 'HentaiAtHome_\K[0-9\.]+(?=\.zip)')
 
     if [ -z "$version" ]; then
-        echo "错误：未找到最新版本号。请检查网页结构或脚本中的正则表达式。" >&2
+        REMOTE_VERSION = "错误：未找到最新版本号。" >&2
         return 1
     fi
 
-    echo "最新版本号为：$version" >&2
-    echo "$version"
-    echo "--- 版本号获取完成 ---" >&2
+    REMOTE_VERSION="$version" # 更新全局变量
     return 0
+}
+
+# 读取本地版本号
+get_local_version() {
+    if [ -f "$LOCAL_VERSION_FILE" ]; then
+        LOCAL_VERSION=$(cat "$LOCAL_VERSION_FILE")
+    else
+        LOCAL_VERSION="未安装"
+    fi
 }
 
 # 创建或修改登录配置文件
@@ -270,9 +279,11 @@ manage_service() {
 # 创建服务文件 (根据 Init System 类型)
 create_service_file() {
     echo "正在创建服务文件 $SERVICE_FILE_PATH..."
+    local service_description="EhentaiAtHome Client - v${REMOTE_VERSION:-Unknown}" # 包含版本号
+
     if [ "$INIT_SYSTEM" = "systemd" ]; then
         SERVICE_CONTENT="[Unit]
-Description=EhentaiAtHome
+Description=${service_description}
 Documentation=https://e-hentai.org/hentaiathome.php
 After=network.target syslog.target
 
@@ -293,7 +304,7 @@ WantedBy=multi-user.target
         SERVICE_CONTENT="#!/sbin/openrc-run
 
 name=\"HentaiAtHome\"
-description=\"E-hentai At Home Client\"
+description=\"${service_description}\"
 command=\"/usr/bin/java\"
 command_args=\"${JVM_OPTS} -jar ${INSTALL_DIR}/HentaiAtHome.jar\"
 pidfile=\"/var/run/${SERVICE_NAME}.pid\"
@@ -325,14 +336,19 @@ depend() {
 install_hath() {
     echo "--- 正在执行 HentaiAtHome 安装程序 ---"
 
+    # 在安装前，先获取远程版本号，以便在重装提示中使用
+    get_latest_version || return 1
+
     # 检查是否已安装
     if [ -d "$INSTALL_DIR" ] && [ -f "$SERVICE_FILE_PATH" ]; then
-        read -rp "HentaiAtHome 似乎已安装在 $INSTALL_DIR。是否要重新安装？(y/N) " reinstall_confirm
+        get_local_version # 获取当前本地版本
+        echo "HentaiAtHome 似乎已安装在 $INSTALL_DIR (当前版本: ${LOCAL_VERSION})。"
+        read -rp "远程最新版本为 ${REMOTE_VERSION}。是否要重新安装/更新？(y/N) " reinstall_confirm
         if [[ ! "$reinstall_confirm" =~ ^[Yy]$ ]]; then
-            echo "重新安装已取消。"
+            echo "操作已取消。"
             return 0
         fi
-        echo "正在执行重新安装..."
+        echo "正在执行重新安装/更新..."
         # 如果是重装，先尝试停止和禁用现有服务（即使之前安装失败，这些命令也应安全）
         manage_service "stop" "" || true
         manage_service "disable" "" || true
@@ -343,16 +359,18 @@ install_hath() {
 
     check_and_install_dependencies || return 1
 
-    local latest_version
-    latest_version=$(get_latest_version) || return 1
+    # 如果之前没有获取成功，这里再获取一次
+    if [ "$REMOTE_VERSION" = "未知" ]; then
+        get_latest_version || return 1
+    fi
 
-    if [ -z "$latest_version" ]; then
+    if [ -z "$REMOTE_VERSION" ] || [ "$REMOTE_VERSION" = "未知" ]; then
         echo "错误：未能获取到有效的版本号，无法继续安装。" >&2
         return 1
     fi
 
-    local download_url="${DOWNLOAD_BASE_URL}HentaiAtHome_${latest_version}.zip"
-    local zip_file="/tmp/HentaiAtHome_${latest_version}.zip"
+    local download_url="${DOWNLOAD_BASE_URL}HentaiAtHome_${REMOTE_VERSION}.zip"
+    local zip_file="/tmp/HentaiAtHome_${REMOTE_VERSION}.zip"
 
     echo "正在下载软件 $download_url 到 $zip_file..."
     curl -s -o "$zip_file" "$download_url"
@@ -396,6 +414,10 @@ install_hath() {
     fi
     echo "解压完成。"
 
+    echo "正在保存本地版本号 ${REMOTE_VERSION} 到 ${LOCAL_VERSION_FILE}..."
+    echo "${REMOTE_VERSION}" > "${LOCAL_VERSION_FILE}"
+    LOCAL_VERSION="${REMOTE_VERSION}" # 更新全局变量
+    
     echo "正在删除临时下载文件 $zip_file..."
     rm -f "$zip_file"
 
@@ -430,7 +452,7 @@ uninstall_hath() {
     fi
 
     # 第二次确认
-    read -rp "再次确认：您确定要彻底卸载 HentaiAtHome 吗？此操作不可逆！(请输入 'yes' 继续): " confirm_second
+    read -rp "再次确认：您确定要彻底卸载 HentaiAtHome 吗？客户端数据也会删除会影响 HentaiAtHome 里的质量和信任，此操作不可逆！(请输入 'yes' 继续): " confirm_second
     if [[ ! "$confirm_second" == "yes" ]]; then
         echo "卸载已取消。"
         return 0
@@ -461,6 +483,9 @@ uninstall_hath() {
     rm -f /tmp/HentaiAtHome_*.zip
 
     echo "HentaiAtHome 已成功卸载。"
+    # 清除本地版本文件
+    rm -f "$LOCAL_VERSION_FILE"
+    LOCAL_VERSION="未知"
     return 0
 }
 
@@ -577,21 +602,25 @@ detect_os # 在脚本开始时检测系统
 
 while true; do
     clear # 清屏以刷新状态显示
+    get_local_version # 获取本地版本
+    get_latest_version # 获取远程版本
     get_hath_status # 每次显示菜单前更新状态
 
     echo "--- HentaiAtHome 跨平台管理脚本 ---"
-    echo "当前系统检测结果："
-    echo "发行版: ${ID_LIKE:-$ID} (或 $ID)"
+    echo "系统: ${ID_LIKE:-$ID} (或 $ID)"
+    echo "包管理器: ${PKG_MANAGER}"
     echo "Java 版本: ${JAVA_PACKAGE}"
     echo "服务管理: ${INIT_SYSTEM}"
     echo "服务文件路径: ${SERVICE_FILE_PATH}"
     echo "------------------------------------"
 
     echo "HentaiAtHome 服务状态: ${HATH_STATUS}" # 显示当前服务状态
+    echo "本地版本: ${LOCAL_VERSION}"
+    echo "最新版本: ${REMOTE_VERSION}"
     echo "------------------------------------"
 
     echo "请选择一个操作："
-    echo "  1) 安装 HentaiAtHome"
+    echo "  1) 安装/更新 HentaiAtHome"
     echo "  2) 卸载 HentaiAtHome"
     echo "  3) 修改登录配置并重启服务"
     echo "  4) 监听服务日志 (排错)"
@@ -608,7 +637,7 @@ while true; do
 
     case "$choice" in
         1)
-            install_hath
+            install_hath # 此函数现在也处理更新逻辑
             read -rp "按任意键继续..."
             ;;
         2)
