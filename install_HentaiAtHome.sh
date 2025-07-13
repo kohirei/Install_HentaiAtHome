@@ -3,10 +3,7 @@
 # 定义常量
 VERSION_URL="https://forums.e-hentai.org/lofiversion/index.php/t234458.html"
 DOWNLOAD_BASE_URL="https://repo.e-hentai.org/hath/"
-# INSTALL_DIR="/opt/HentaiAtHome" # 此处改为用户输入或默认
 SERVICE_NAME="ehentaiathome" # 服务名称，不含后缀
-CLIENT_LOGIN_DIR="" # 登录配置文件目录，在install_hath中根据INSTALL_DIR设置
-CLIENT_LOGIN_FILE="" # 登录配置文件路径，在install_hath中根据INSTALL_DIR设置
 # 日志文件路径
 SERVICE_LOG_FILE="" # 在install_hath中根据INSTALL_DIR设置
 LOCAL_VERSION_FILE="" # 存储本地版本号的文件，在install_hath中根据INSTALL_DIR设置
@@ -323,6 +320,8 @@ install_hath() {
             echo "错误：安装目录不能是根目录。请重新输入。" >&2
         elif [[ "$INSTALL_DIR" =~ [[:space:]] ]]; then
             echo "错误：安装目录不能包含空格。请重新输入。" >&2
+        elif [[ ! "$INSTALL_DIR" =~ ^/ ]]; then
+            echo "错误：安装目录必须是绝对路径（以 / 开头）。请重新输入。" >&2
         elif [[ "$INSTALL_DIR" =~ [^a-zA-Z0-9_/.-] ]]; then
             echo "错误：安装目录包含非法字符。请重新输入。" >&2
         else
@@ -331,8 +330,6 @@ install_hath() {
     done
 
     # 设置依赖于 INSTALL_DIR 的常量
-    CLIENT_LOGIN_DIR="${INSTALL_DIR}/data"
-    CLIENT_LOGIN_FILE="${CLIENT_LOGIN_DIR}/client_login"
     SERVICE_LOG_FILE="${INSTALL_DIR}/output.log"
     LOCAL_VERSION_FILE="${INSTALL_DIR}/.hath_version"
 
@@ -478,23 +475,17 @@ uninstall_hath() {
         if [ -f "/etc/systemd/system/${SERVICE_NAME}.service" ]; then
             INSTALL_DIR=$(grep "WorkingDirectory=" "/etc/systemd/system/${SERVICE_NAME}.service" | cut -d'=' -f2)
             SERVICE_FILE_PATH="/etc/systemd/system/${SERVICE_NAME}.service"
-            CLIENT_LOGIN_DIR="${INSTALL_DIR}/data"
-            CLIENT_LOGIN_FILE="${CLIENT_LOGIN_DIR}/client_login"
             SERVICE_LOG_FILE="${INSTALL_DIR}/output.log"
             LOCAL_VERSION_FILE="${INSTALL_DIR}/.hath_version"
         elif [ -f "/etc/init.d/${SERVICE_NAME}" ]; then
             INSTALL_DIR=$(grep "command_args=" "/etc/init.d/${SERVICE_NAME}" | grep -oP '\-jar \K[^/]+' | xargs dirname)
             SERVICE_FILE_PATH="/etc/init.d/${SERVICE_NAME}"
-            CLIENT_LOGIN_DIR="${INSTALL_DIR}/data"
-            CLIENT_LOGIN_FILE="${CLIENT_LOGIN_DIR}/client_login"
             SERVICE_LOG_FILE="${INSTALL_DIR}/output.log"
             LOCAL_VERSION_FILE="${INSTALL_DIR}/.hath_version"
         else
             # 如果以上都找不到，就假定默认安装路径，但警告用户
             INSTALL_DIR="/opt/HentaiAtHome"
             SERVICE_FILE_PATH="/etc/systemd/system/${SERVICE_NAME}.service" # 假定Systemd
-            CLIENT_LOGIN_DIR="${INSTALL_DIR}/data"
-            CLIENT_LOGIN_FILE="${CLIENT_LOGIN_DIR}/client_login"
             SERVICE_LOG_FILE="${INSTALL_DIR}/output.log"
             LOCAL_VERSION_FILE="${INSTALL_DIR}/.hath_version"
             echo "警告：无法自动确定 HentaiAtHome 的安装路径和服务文件。将尝试使用默认路径进行卸载，请确认！" >&2
@@ -546,29 +537,25 @@ uninstall_hath() {
     return 0
 }
 
-# 修改登录配置并重启服务
+# 提示用户修改登录配置并重启服务
 modify_login_and_restart_service() {
-    echo "--- 正在修改登录配置并重启服务 ---"
+    echo "--- 正在提示修改登录配置 ---"
     # 确保 INSTALL_DIR 已经设置，如果未设置则尝试自动检测
     if [ -z "$INSTALL_DIR" ]; then
         if [ -f "/etc/systemd/system/${SERVICE_NAME}.service" ]; then
             INSTALL_DIR=$(grep "WorkingDirectory=" "/etc/systemd/system/${SERVICE_NAME}.service" | cut -d'=' -f2)
             SERVICE_FILE_PATH="/etc/systemd/system/${SERVICE_NAME}.service"
-            CLIENT_LOGIN_DIR="${INSTALL_DIR}/data"
-            CLIENT_LOGIN_FILE="${CLIENT_LOGIN_DIR}/client_login"
             SERVICE_LOG_FILE="${INSTALL_DIR}/output.log"
             LOCAL_VERSION_FILE="${INSTALL_DIR}/.hath_version"
         elif [ -f "/etc/init.d/${SERVICE_NAME}" ]; then
             INSTALL_DIR=$(grep "command_args=" "/etc/init.d/${SERVICE_NAME}" | grep -oP '\-jar \K[^/]+' | xargs dirname)
             SERVICE_FILE_PATH="/etc/init.d/${SERVICE_NAME}"
-            CLIENT_LOGIN_DIR="${INSTALL_DIR}/data"
-            CLIENT_LOGIN_FILE="${CLIENT_LOGIN_DIR}/client_login"
             SERVICE_LOG_FILE="${INSTALL_DIR}/output.log"
             LOCAL_VERSION_FILE="${INSTALL_DIR}/.hath_version"
         fi
     fi
 
-    if [ ! -d "$INSTALL_DIR" ] || [ ! -f "$SERVICE_FILE_PATH" ]; then
+    if [ ! -d "$INSTALL_DIR" ] || [ ! -f "${INSTALL_DIR}/HentaiAtHome.jar" ]; then
         echo "错误：HentaiAtHome 似乎未安装或安装不完整。请先执行安装操作。" >&2
         return 1
     fi
@@ -585,16 +572,6 @@ modify_login_and_restart_service() {
     echo ""
 
     read -rp "按任意键继续..."
-
-    echo "正在重启服务 $SERVICE_NAME 以应用新的配置..."
-    # 实际上这里不需要重启，因为用户会手动配置并启动
-    # manage_service "restart" ""
-    # if [ $? -ne 0 ]; then
-    #     echo "错误：重启服务失败。请手动检查服务状态。" >&2
-    #     echo "Systemd: 'systemctl status ${SERVICE_NAME}.service'" >&2
-    #     echo "OpenRC: '/etc/init.d/${SERVICE_NAME} status'" >&2
-    #     return 1
-    # fi
 
     echo "已指示如何修改登录配置。请手动执行操作并重新启动服务。"
     return 0
@@ -638,15 +615,11 @@ get_hath_status() {
         if [ -f "/etc/systemd/system/${SERVICE_NAME}.service" ]; then
             INSTALL_DIR=$(grep "WorkingDirectory=" "/etc/systemd/system/${SERVICE_NAME}.service" | cut -d'=' -f2)
             SERVICE_FILE_PATH="/etc/systemd/system/${SERVICE_NAME}.service"
-            CLIENT_LOGIN_DIR="${INSTALL_DIR}/data"
-            CLIENT_LOGIN_FILE="${CLIENT_LOGIN_DIR}/client_login"
             SERVICE_LOG_FILE="${INSTALL_DIR}/output.log"
             LOCAL_VERSION_FILE="${INSTALL_DIR}/.hath_version"
         elif [ -f "/etc/init.d/${SERVICE_NAME}" ]; then
             INSTALL_DIR=$(grep "command_args=" "/etc/init.d/${SERVICE_NAME}" | grep -oP '\-jar \K[^/]+' | xargs dirname)
             SERVICE_FILE_PATH="/etc/init.d/${SERVICE_NAME}"
-            CLIENT_LOGIN_DIR="${INSTALL_DIR}/data"
-            CLIENT_LOGIN_FILE="${CLIENT_LOGIN_DIR}/client_login"
             SERVICE_LOG_FILE="${INSTALL_DIR}/output.log"
             LOCAL_VERSION_FILE="${INSTALL_DIR}/.hath_version"
         fi
@@ -713,7 +686,7 @@ start_hath_service() {
 stop_hath_service() {
     get_hath_status # 刷新当前状态
     if [ "$HATH_STATUS" = "已停止" ] || [ "$HATH_STATUS" = "未安装" ] || [ "$HATH_STATUS" = "服务文件缺失" ]; then
-        echo "HentaiAtHome 服务未在运行、未安装或服务文件缺失，无需停止。"
+        echo "HentaiAtHome 服务未在运行或未安装或服务文件缺失，无需停止。"
         return 0
     fi
 
